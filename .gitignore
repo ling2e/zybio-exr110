@@ -1,0 +1,36 @@
+# Compiled output
+/dist
+
+# Dependencies
+/node_modules
+
+# IDE
+/.idea
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+*.env
+.env.*
+
+# Testing
+/coverage
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Kiro
+.kiro/
+.kiro_tmp/
+
+# Database
+/data
