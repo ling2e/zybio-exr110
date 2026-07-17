@@ -19,6 +19,7 @@ Thumbs.db
 # Env
 *.env
 .env.*
+!.env.template
 
 # Testing
 /coverage
@@ -32,5 +33,3 @@ pnpm-debug.log*
 .kiro/
 .kiro_tmp/
 
-# Database
-/data
