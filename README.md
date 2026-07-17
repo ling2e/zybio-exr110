@@ -1,98 +1,320 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Zybio EXR-110 LIS Server
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+> LIS (Laboratory Information System) backend for Zybio EXR-110/120 POCT analyzers. Receives HL7 v2.3.1 test results over TCP/MLLP, manages work orders, and exposes a REST API for result review, device monitoring, and statistics.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Table of Contents
 
-## Description
+- [About](#about)
+- [Architecture](#architecture)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [API Reference](#api-reference)
+- [HL7 Protocol](#hl7-protocol)
+- [Development](#development)
+- [Project Structure](#project-structure)
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+---
 
-## Project setup
+## About
 
-```bash
-$ pnpm install
+This server bridges Zybio EXR-series POCT instruments with hospital workflows. It:
+
+- **Receives** test results (sample + QC) from connected instruments via HL7 ORU^R01
+- **Responds** to instrument work order queries (QRY^Q02 → DSR^Q03)
+- **Pushes** work orders proactively to instruments (ORM^O01)
+- **Tracks** device connectivity and health
+- **Exposes** a REST API for UI clients to review results, manage patients, and monitor operations
+
+### Built With
+
+| Layer | Technology |
+|---|---|
+| Runtime | Node.js |
+| Framework | NestJS 11 |
+| Language | TypeScript 5.7+ |
+| Database | SQLite (better-sqlite3, WAL mode) |
+| Protocol | HL7 v2.3.1 over MLLP (TCP) |
+| Docs | Swagger/OpenAPI at `/api-docs` |
+
+---
+
+## Architecture
+
+```
+┌──────────────┐       TCP :10001 (MLLP)       ┌──────────────────┐
+│  EXR-110/120 │ ◄──────────────────────────────► │   MLLP Service   │
+│  Instrument  │   HL7 frames (SB...EB CR)      │   (net.Server)   │
+└──────────────┘                                 └────────┬─────────┘
+                                                          │ 'frame' event
+                                                 ┌────────▼─────────┐
+                                                 │   HL7 Router      │
+                                                 │  (dispatch by     │
+                                                 │   MSH-9 type)     │
+                                                 └──┬─────┬─────┬───┘
+                                                    │     │     │
+                                          ORU^R01   │ QRY^Q02   │ ACK^R03
+                                                    │     │     │ (ignored)
+                                          ┌─────────▼┐  ┌─▼────────┐
+                                          │ORU Handler│  │QRY Handler│
+                                          │(results + │  │(work order│
+                                          │ QC store) │  │  lookup)  │
+                                          └─────┬─────┘  └──────────┘
+                                                │
+                                    ┌───────────┼───────────┐
+                                    ▼           ▼           ▼
+                              ┌──────────┐┌──────────┐┌──────────┐
+                              │ Results  ││   QC     ││ Patients │
+                              │ Service  ││ Service  ││ Service  │
+                              └────┬─────┘└────┬─────┘└────┬─────┘
+                                   │           │           │
+                                   └───────────┼───────────┘
+                                               ▼
+                                      ┌─────────────────┐
+                                      │  SQLite (WAL)   │
+                                      │  ./data/exr110  │
+                                      └─────────────────┘
+
+                    HTTP :3000 (REST)
+┌──────────┐  ◄──────────────────────────────►  NestJS Controllers
+│ UI Client│     JSON + X-API-Key header        (results, devices,
+└──────────┘                                     work-orders, stats...)
 ```
 
-## Compile and run the project
+---
+
+## Getting Started
+
+### Prerequisites
+
+- **Node.js** 18+ (tested with 20.x)
+- **pnpm** (package manager)
+
+### Installation
 
 ```bash
-# development
-$ pnpm run start
+# Clone
+git clone <repo-url>
+cd zybio-exr110-server
 
-# watch mode
-$ pnpm run start:dev
+# Install dependencies
+pnpm install
 
-# production mode
-$ pnpm run start:prod
+# Start in development mode (watch)
+pnpm run start:dev
 ```
 
-## Run tests
+The server starts two listeners:
+- **HTTP API** on `http://localhost:3000` (configurable via `PORT` env)
+- **MLLP/TCP** on `0.0.0.0:10001` (configurable via `EXR_PORT` env)
+
+Swagger docs available at `http://localhost:3000/api-docs`.
+
+---
+
+## Configuration
+
+Create a `.env` file in the project root:
+
+```env
+# TCP port for instrument connections (MLLP)
+EXR_PORT=10001
+
+# REST API port (optional, defaults to 3000)
+PORT=3000
+
+# API key for REST endpoints (omit for permissive/dev mode)
+API_KEY=your-secret-key
+
+# Database (defaults to SQLite at ./data/exr110.db)
+DATABASE_DRIVER=sqlite
+DATABASE_URL=./data/exr110.db
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `EXR_PORT` | `10001` | TCP port for MLLP instrument connections |
+| `PORT` | `3000` | HTTP REST API port |
+| `API_KEY` | _(none)_ | If set, all REST endpoints require `X-API-Key` header. If unset, all requests pass (dev mode). |
+| `DATABASE_DRIVER` | `sqlite` | Only `sqlite` is currently supported |
+| `DATABASE_URL` | `./data/exr110.db` | SQLite file path |
+
+---
+
+## API Reference
+
+All endpoints require `X-API-Key` header (when `API_KEY` is configured). Interactive docs at `/api-docs`.
+
+### Health
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Health check (public, no auth) |
+
+### Results
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/results` | Paginated list (filters: dateFrom, dateTo, patient, item, device, status, flag) |
+| GET | `/results/export` | CSV download |
+| GET | `/results/:id` | Single result with test items |
+| PUT | `/results/:id/review` | Mark as reviewed |
+| PUT | `/results/:id/unreview` | Revert review |
+| DELETE | `/results/:id` | Soft-delete (void) |
+
+### Work Orders
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/work-orders` | Create (optionally push to device) |
+| GET | `/work-orders` | Paginated list |
+| GET | `/work-orders/:id` | Single work order |
+| DELETE | `/work-orders/:id` | Cancel |
+| POST | `/work-orders/batch` | Batch create |
+
+### Devices
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/devices` | All connected/known devices |
+| POST | `/devices/check-all` | TCP-probe all devices, update status |
+| POST | `/devices/:id/ping` | Probe single device |
+| GET | `/devices/:id/history` | Connection event history |
+
+### QC
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/qc` | Paginated QC results |
+| GET | `/qc/:id` | Single QC result with items |
+
+### Stats
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/stats/daily` | Daily summary (tests, abnormals, QC pass/fail) |
+| GET | `/stats/throughput` | Time-series volume (group by day/month) |
+| GET | `/stats/devices` | Per-device stats |
+
+### Patients
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/patients` | Search by name/MRN |
+| GET | `/patients/:id` | Single patient |
+| POST | `/patients` | Create |
+| PUT | `/patients/:id` | Update |
+| GET | `/patients/:id/results` | Patient's test history |
+
+### Messages
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/messages` | Raw HL7 message log |
+| GET | `/messages/:id` | Single message (hex + decoded) |
+
+### Config
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/config/items` | All test item configurations |
+| PUT | `/config/items/:name` | Upsert item config (display name, unit, reference range) |
+
+---
+
+## HL7 Protocol
+
+The server implements bidirectional HL7 v2.3.1 communication over MLLP framing.
+
+### Supported Message Types
+
+| Type | Direction | Purpose |
+|---|---|---|
+| `ORU^R01` | Instrument → Server | Upload test/QC results |
+| `ACK^R01` | Server → Instrument | Acknowledge ORU |
+| `QRY^Q02` | Instrument → Server | Query work order by barcode |
+| `QCK^Q02` | Server → Instrument | Immediate ack for query |
+| `DSR^Q03` | Server → Instrument | Work order data response |
+| `ORM^O01` | Server → Instrument | Push work order |
+
+### MLLP Framing
+
+```
+<SB>message_body<EB><CR>
+```
+- `<SB>` = `0x0B`, `<EB>` = `0x1C`, `<CR>` = `0x0D`
+
+### Instrument Configuration
+
+On the EXR-110/120 instrument, configure LIS settings:
+- **Server IP**: IP address of this server
+- **Port**: `10001` (or whatever `EXR_PORT` is set to)
+- **Enable LIS**: On
+
+---
+
+## Development
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+pnpm run start:dev      # Watch mode
+pnpm run start:debug    # With debugger
+pnpm run test           # Unit tests
+pnpm run test:cov       # Coverage
+pnpm run test:e2e       # End-to-end
+pnpm run lint           # ESLint fix
+pnpm run build          # Compile to dist/
 ```
 
-## Deployment
+### Database
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+SQLite with WAL mode. Database file at `./data/exr110.db` (auto-created on first run). Migrations run automatically on startup from `src/database/migrations/`.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### Adding a New Module
+
+Always use NestJS CLI:
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+pnpm nest g res <name>   # Full CRUD resource
+pnpm nest g s <name>     # Service only
+pnpm nest g co <name>    # Controller only
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+---
 
-## Resources
+## Project Structure
 
-Check out a few resources that may come in handy when working with NestJS:
+```
+src/
+├── main.ts                     # Bootstrap (HTTP + Swagger)
+├── app.module.ts               # Root module
+├── app.controller.ts           # /health endpoint
+├── common/
+│   ├── api-key.guard.ts        # Global X-API-Key auth
+│   └── public.decorator.ts     # @Public() bypass
+├── database/
+│   ├── database.service.ts     # Adapter loader + migration runner
+│   ├── sqlite.adapter.ts       # better-sqlite3 wrapper
+│   └── migrations/             # SQL files (auto-run on start)
+├── hl7/
+│   ├── mllp.service.ts         # TCP server, MLLP frame extraction
+│   ├── hl7-parser.service.ts   # HL7 string → structured message
+│   ├── hl7-builder.service.ts  # Build ACK, QCK, DSR, ORM messages
+│   ├── hl7-router.service.ts   # Dispatch by message type
+│   ├── oru-handler.service.ts  # Process ORU^R01 (results + QC)
+│   ├── qry-handler.service.ts  # Process QRY^Q02 (work order query)
+│   ├── orm-sender.service.ts   # Push ORM^O01 to device
+│   └── hl7.types.ts            # Protocol types & interfaces
+├── results/                    # Test result CRUD + review + export
+├── qc/                         # QC results + ±15% evaluation
+├── devices/                    # Device registry + TCP probe
+├── work-orders/                # Work order management + push
+├── messages/                   # Raw HL7 message audit log
+├── patients/                   # Patient CRUD
+├── stats/                      # Aggregation queries
+└── config-items/               # Test item configuration
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+---
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Private / Unlicensed.
